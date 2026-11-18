@@ -19,8 +19,9 @@
   --fs: 15px;
   color-scheme: light;
 }
+/* Dark theme: follows the phone unless Appearance is set to Light or Dark (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #171615; --surface: #22201E; --surface-2: #282624; --ink: #F2EEE8; --ink-2: #D9D3CB; --muted: #A39B92;
     --line: #2E2B28; --line-2: #3A3633; --track: #2C2926;
     --accent: #7FBDB4; --accent-hover: #93CBC2; --accent-ink: #9AD1C8; --accent-soft: #23332F; --on-accent: #10201D;
@@ -29,6 +30,15 @@
     --shadow: 0 12px 32px rgba(0, 0, 0, 0.35); --fab-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #171615; --surface: #22201E; --surface-2: #282624; --ink: #F2EEE8; --ink-2: #D9D3CB; --muted: #A39B92;
+  --line: #2E2B28; --line-2: #3A3633; --track: #2C2926;
+  --accent: #7FBDB4; --accent-hover: #93CBC2; --accent-ink: #9AD1C8; --accent-soft: #23332F; --on-accent: #10201D;
+  --flag-bg: #3A2E14; --flag-fg: #F0C46A; --err-bg: #3B2220; --err-fg: #F2A99E; --up: hsl(10 70% 66%);
+  --rail: #3A3633; --scrim: rgba(0, 0, 0, 0.5); --toast-act: #245752;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.35); --fab-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -39,6 +49,7 @@ body {
   -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; min-height: 100vh;
 }
 body.no-scroll { overflow: hidden; }
+html.theme-fade, html.theme-fade * { transition: background-color 0.45s var(--ease), color 0.45s var(--ease), border-color 0.45s var(--ease) !important; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: var(--accent-ink); }

@@ -10,7 +10,7 @@ import { spark, trend } from './charts.js';
 import { logSheet, injurySheet, incidentSheet, appointmentSheet, syncSheet, pairSheet, assistantSheet, rangeSheet } from './sheets.js';
 import { esc, icon, sevBadge, sevColor, toast, initSeg, seg, fmtDay, fmtTime, fmtDate, fmtDateLong, ago, apptWhen, daysBetween, addDays, startOfDay, dayKey, download, confirmButton } from './ui.js';
 
-const APP_VERSION = 3; // keep in step with VERSION in sw.js
+const APP_VERSION = 4; // keep in step with VERSION in sw.js
 const app = document.getElementById('app');
 let route = null, lastKey = '';
 const view = { range: '30', filter: 'all', query: '', searching: false, visit: {}, showResolved: false, expanded: new Set() };
@@ -447,6 +447,9 @@ function settingsView() {
     <label class="row-btn" ${st(i++)}>${icon('upload')}<span class="grow">Restore from file<small>Merges with what's here, without duplicates</small></span>${icon('chev', 'sm')}<input type="file" id="restoreFile" accept=".json,application/json" hidden></label>
     <button type="button" class="row-btn" data-act="csv" ${st(i++)}>${icon('table')}<span class="grow">Export as spreadsheet<small>.csv you can open in Excel, Numbers or Sheets</small></span>${icon('chev', 'sm')}</button>
 
+    <div class="section-h" ${st(i++)}><h2>Appearance</h2><span>this device</span></div>
+    <div ${st(i++)}>${seg([['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], local.theme || 'system', 'lg theme-seg')}</div>
+
     <details class="adv" ${st(i++)}><summary>More</summary>
       <div class="adv-body">
         ${Sync.configured() ? `<p class="hint">Server: <span class="mono">${esc(c.url)}</span></p>
@@ -461,6 +464,12 @@ function settingsView() {
 
 // ---------------------------------------------------------------- events
 function onSeg(sg, v) {
+  if (sg.classList.contains('theme-seg')) {
+    document.documentElement.classList.add('theme-fade');
+    S.setLocal({ theme: v }).then(applyPrefs);
+    setTimeout(() => document.documentElement.classList.remove('theme-fade'), 500);
+    return;
+  }
   if (sg.classList.contains('range-seg')) {
     view.range = v;
     const inj = S.injury(route.id);
@@ -583,7 +592,15 @@ function bindErase() {
   }
 }
 
-function applyPrefs() { document.documentElement.classList.toggle('big-text', !!S.getLocal().bigText); }
+function applyPrefs() {
+  const root = document.documentElement;
+  root.classList.toggle('big-text', !!S.getLocal().bigText);
+  const theme = S.getLocal().theme || 'system';
+  if (theme === 'system') delete root.dataset.theme; else root.dataset.theme = theme;
+  try { localStorage.setItem('st.theme', theme); } catch { /* private mode */ }
+  const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.content = dark ? '#171615' : '#F7F5F2'; m.removeAttribute('media'); });
+}
 
 // ---------------------------------------------------------------- startup
 async function start() {
@@ -592,6 +609,7 @@ async function start() {
   let cfg = {};
   try { cfg = await (await fetch(`config.json?t=${Date.now()}`, { cache: 'no-store' })).json(); } catch { /* offline: cached in sync settings */ }
   await Sync.init(cfg.syncUrl || '');
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyPrefs);
 
   window.addEventListener('hashchange', () => {
     if (location.hash.startsWith('#pair=')) return handlePair();
