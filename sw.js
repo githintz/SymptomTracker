@@ -1,6 +1,6 @@
 // Offline support: the app shell is cached so logging works with no signal.
 // Bump VERSION whenever any file below changes so phones pick up the update.
-const VERSION = 'st-v4';
+const VERSION = 'st-v5';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/styles.css',
   'js/app.js', 'js/store.js', 'js/sync.js', 'js/crypto.js', 'js/ui.js', 'js/sheets.js', 'js/charts.js', 'js/stats.js',
@@ -9,7 +9,8 @@ const SHELL = [
 const FONTS = 'st-fonts';
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache, so a new version never stores stale files
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION && k !== FONTS).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
@@ -30,5 +31,5 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   // app shell: cache first (fast and offline), navigation falls back to index.html
-  e.respondWith(caches.match(req, { ignoreSearch: true }).then((hit) => hit || fetch(req).catch(() => (req.mode === 'navigate' ? caches.match('index.html') : Response.error()))));
+  e.respondWith(caches.open(VERSION).then((c) => c.match(req, { ignoreSearch: true })).then((hit) => hit || fetch(req).catch(() => (req.mode === 'navigate' ? caches.match('index.html') : Response.error()))));
 });

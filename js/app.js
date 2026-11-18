@@ -10,7 +10,7 @@ import { spark, trend } from './charts.js';
 import { logSheet, injurySheet, incidentSheet, appointmentSheet, syncSheet, pairSheet, assistantSheet, rangeSheet } from './sheets.js';
 import { esc, icon, sevBadge, sevColor, toast, initSeg, seg, fmtDay, fmtTime, fmtDate, fmtDateLong, ago, apptWhen, daysBetween, addDays, startOfDay, dayKey, download, confirmButton } from './ui.js';
 
-const APP_VERSION = 4; // keep in step with VERSION in sw.js
+const APP_VERSION = 5; // keep in step with VERSION in sw.js
 const app = document.getElementById('app');
 let route = null, lastKey = '';
 const view = { range: '30', filter: 'all', query: '', searching: false, visit: {}, showResolved: false, expanded: new Set() };
@@ -629,7 +629,20 @@ async function start() {
   else render('route');
   bindErase();
 
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
+    // a new version took over: reload once to run it (waits if a sheet is open)
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      const go = () => (document.querySelector('.sheet-wrap') ? setTimeout(go, 1500) : location.reload());
+      go();
+    });
+  }
 }
 const syncDotHtml = () => syncDot();
 
