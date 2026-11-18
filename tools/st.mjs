@@ -26,6 +26,14 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { webcrypto as crypto } from 'node:crypto';
 
+// Node's built-in fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set (Node >= 22.21).
+// Behind a proxy (e.g. a Claude cloud session), re-run this script with it turned on.
+if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_USE_ENV_PROXY) {
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, ['--no-warnings', ...process.argv.slice(1)], { stdio: 'inherit', env: { ...process.env, NODE_USE_ENV_PROXY: '1' } });
+  process.exit(r.status ?? 1);
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const te = new TextEncoder();
 const b64 = (buf) => Buffer.from(buf instanceof Uint8Array ? buf : new Uint8Array(buf)).toString('base64');
