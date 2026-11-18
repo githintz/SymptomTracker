@@ -269,7 +269,7 @@ export function applyInbox(item, receivedAt) {
     save('entries', {
       ...base, injuryId: inj.id, type, at: when.toISOString(), pain: Number.isFinite(pain) ? pain : null,
       feels: strList(item.feels), doing: strList(item.doing), note: str(item.note, 4000),
-      ask: !!item.ask || type === 'concern', askDone: false,
+      ask: item.ask === undefined ? type === 'concern' : !!item.ask, askDone: !!item.askDone,
     });
     return `${TYPE[type].label} for ${inj.name}`;
   }

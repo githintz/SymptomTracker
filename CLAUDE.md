@@ -31,6 +31,8 @@ node tools/st.mjs help
 - Times without a timezone (`2026-11-20T10:30`) are read as local time on the user's phone.
   A date alone (`--at 2026-11-20`) makes an all-day appointment. Resolve relative dates
   ("Thursday") against today's date and confirm them with the user if they're ambiguous.
+- Concerns are "ask my doctor" questions by default. Add `--answered` (or `"askDone": true` in json)
+  to file one that's already been answered, or use json `"ask": false` to file it as a plain concern.
 - Each command prints an id. Re-send with `--id <id>` to update that item (e.g. a rescheduled
   appointment). Keep the id in your reply so the user can ask for changes later.
 - Access is write-only: you can't read the user's entries or check what's already there. If they

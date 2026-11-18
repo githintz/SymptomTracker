@@ -100,7 +100,7 @@ function build(cmd, o) {
       const type = o.type || 'note';
       if (!['pain', 'symptom', 'trigger', 'concern', 'treatment', 'note'].includes(type)) die('--type must be pain, symptom, trigger, concern, treatment or note');
       if (o.pain !== undefined && !(Number(o.pain) >= 0 && Number(o.pain) <= 10)) die('--pain must be 0 to 10');
-      return { kind: 'entry', id, injury: need(o, 'injury'), type, at: dateLike(o.at, 'at') || new Date().toISOString(), pain: o.pain !== undefined ? Number(o.pain) : null, feels: list(o.feels), doing: list(o.doing), note: o.note || '', ask: !!o.ask };
+      return { kind: 'entry', id, injury: need(o, 'injury'), type, at: dateLike(o.at, 'at') || new Date().toISOString(), pain: o.pain !== undefined ? Number(o.pain) : null, feels: list(o.feels), doing: list(o.doing), note: o.note || '', ...(o.ask !== undefined ? { ask: !!o.ask } : {}), ...(o.answered ? { askDone: true } : {}) };
     }
     case 'question': case 'concern':
       return { kind: 'entry', id, injury: need(o, 'injury'), type: 'concern', at: dateLike(o.at, 'at') || new Date().toISOString(), note: need(o, 'note', 'the question'), ask: true };
