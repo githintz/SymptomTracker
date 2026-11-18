@@ -7,15 +7,17 @@ import * as S from './store.js';
 import * as Sync from './sync.js';
 import * as St from './stats.js';
 import { spark, trend } from './charts.js';
-import { logSheet, injurySheet, appointmentSheet, syncSheet, pairSheet, assistantSheet, rangeSheet } from './sheets.js';
+import { logSheet, injurySheet, incidentSheet, appointmentSheet, syncSheet, pairSheet, assistantSheet, rangeSheet } from './sheets.js';
 import { esc, icon, sevBadge, sevColor, toast, initSeg, seg, fmtDay, fmtTime, fmtDate, fmtDateLong, ago, apptWhen, daysBetween, addDays, startOfDay, dayKey, download, confirmButton } from './ui.js';
 
+const APP_VERSION = 3; // keep in step with VERSION in sw.js
 const app = document.getElementById('app');
 let route = null, lastKey = '';
-const view = { range: '30', filter: 'all', query: '', searching: false, visit: {}, showResolved: false };
+const view = { range: '30', filter: 'all', query: '', searching: false, visit: {}, showResolved: false, expanded: new Set() };
 
 function parseRoute() {
   const p = location.hash.replace(/^#\/?/, '').split('/');
+  if (p[0] === 'injury' && p[1] && p[2] === 'incident' && p[3]) return { name: 'incident', id: decodeURIComponent(p[1]), inc: decodeURIComponent(p[3]) };
   if (p[0] === 'injury' && p[1]) return { name: p[2] === 'visit' ? 'visit' : 'injury', id: decodeURIComponent(p[1]) };
   if (p[0] === 'settings') return { name: 'settings' };
   return { name: 'home' };
@@ -23,16 +25,20 @@ function parseRoute() {
 
 function render(why = 'route') {
   const r = parseRoute();
-  const key = `${r.name}:${r.id || ''}`;
+  const key = `${r.name}:${r.id || ''}:${r.inc || ''}`;
   const isNew = key !== lastKey;
   if (isNew) { view.filter = 'all'; view.query = ''; view.searching = false; }
   route = r; lastKey = key;
   const y = window.scrollY;
   let html;
-  if (r.name === 'injury' || r.name === 'visit') {
+  if (r.name === 'injury' || r.name === 'visit' || r.name === 'incident') {
     const inj = S.injury(r.id);
     if (!inj) { location.replace('#/'); return; }
-    html = r.name === 'injury' ? injuryView(inj) : visitView(inj);
+    if (r.name === 'incident') {
+      const inc = S.incident(r.inc);
+      if (!inc) { location.replace(`#/injury/${encodeURIComponent(inj.id)}`); return; }
+      html = incidentView(inj, inc);
+    } else html = r.name === 'injury' ? injuryView(inj) : visitView(inj);
   } else if (r.name === 'settings') html = settingsView();
   else html = homeView();
   app.innerHTML = `<main class="page ${isNew ? 'animate' : 'still'}" data-view="${r.name}">${html}</main>`;
@@ -111,7 +117,7 @@ function injuryCard(inj, i) {
   const delta = s.delta == null || Math.abs(s.delta) < 0.05 ? '' : `<small class="${s.delta > 0 ? 'up' : 'down'}">${s.delta > 0 ? '↑' : '↓'}${Math.abs(s.delta).toFixed(1)}</small>`;
   return `<article class="card inj ${inj.status === 'resolved' ? 'resolved-card' : ''}" ${st(i)}>
     <a class="card-link" href="#/injury/${esc(inj.id)}" aria-label="${esc(inj.name)} timeline"></a>
-    <div class="inj-head"><div><h2>${esc(inj.name)}</h2><div class="sub">${esc(injSub(inj))}</div></div>${s.latest ? sevBadge(s.latest.pain) : ''}</div>
+    <div class="inj-head"><div><h2>${esc(inj.name)}</h2><div class="sub">${esc(injSub(inj))}</div>${S.openIncidents(inj.id)[0] ? `<div class="ongoing">${esc(S.openIncidents(inj.id)[0].title)}</div>` : ''}</div>${s.latest ? sevBadge(s.latest.pain) : ''}</div>
     ${spark(days)}
     <div class="inj-stats">
       <div><span class="k">7-day avg</span><span class="v">${s.avg7 == null ? '–' : s.avg7.toFixed(1)} ${delta}</span></div>
@@ -150,13 +156,10 @@ function injuryView(inj) {
   const appts = S.appointments(inj.id);
   const upcoming = appts.filter((a) => new Date(a.at) > Date.now() - 2 * 3600e3);
   let i = 0;
-  const groups = [];
-  for (const e of shown) {
-    const k = dayKey(e.at);
-    if (!groups.length || groups[groups.length - 1].k !== k) groups.push({ k, label: fmtDay(e.at), items: [] });
-    groups[groups.length - 1].items.push(e);
-  }
-  let j = 0;
+  const grouped = view.filter === 'all' && !q;
+  const tl = { j: 0 };
+  const body = !shown.length ? `<div class="empty small"><p>${es.length ? 'Nothing matches.' : 'No entries yet. Tap <b>Log now</b> the next time it hurts, clicks or squeaks.'}</p></div>`
+    : grouped ? groupedTimeline(inj, es, tl) : dayGroups(shown, es, tl, { showIncident: true });
   return `
     <div class="topbar" ${st(i++)}><a class="back" href="#/">${icon('left')}Injuries</a>
       <div class="tb-r"><button type="button" class="icon-btn" data-act="search" aria-label="Search entries" aria-pressed="${view.searching}">${icon('search')}</button>
@@ -171,13 +174,11 @@ function injuryView(inj) {
     <div class="row-actions" ${st(i++)}>
       <a class="action-pill" href="#/injury/${esc(inj.id)}/visit">${icon('clip', 'sm')}Visit summary</a>
       <button type="button" class="action-pill" data-act="new-appt">${icon('cal', 'sm')}Add appointment</button>
+      <button type="button" class="action-pill" data-act="new-incident">${icon('plus', 'sm')}New incident</button>
     </div>
     ${view.searching ? `<div class="search" ${st(0)}>${icon('search', 'sm')}<input id="q" type="search" placeholder="Search notes, triggers, feelings" value="${esc(view.query)}" autocomplete="off"><button type="button" class="text-btn" data-act="search">Done</button></div>` : ''}
     <div class="pills" ${st(i++)}>${FILTERS.filter(([k]) => k === 'all' || counts[k]).map(([k, label]) => `<button type="button" class="pill" data-filter="${k}" aria-pressed="${view.filter === k}">${label}<span class="n">${counts[k]}</span></button>`).join('')}</div>
-    <div class="timeline" ${st(i++)}>
-      ${groups.length ? groups.map((g) => `<section class="day"><h3>${esc(g.label)}</h3>${g.items.map((e) => entryRow(e, es, j++)).join('')}</section>`).join('')
-        : `<div class="empty small"><p>${es.length ? 'Nothing matches.' : 'No entries yet. Tap <b>Log now</b> the next time it hurts, clicks or squeaks.'}</p></div>`}
-    </div>
+    <div class="timeline" ${st(i++)}>${body}</div>
     ${pastAppts(appts, i++)}
     <div class="fade-bottom"></div>
     ${inj.status !== 'resolved' ? `<button type="button" class="fab" data-act="log" data-inj="${esc(inj.id)}">${icon('plus')}Log now</button>` : ''}`;
@@ -190,17 +191,111 @@ function pastAppts(appts, i) {
     <div class="card list" ${st(i)}>${past.map((a) => `<button type="button" class="crow btn-row" data-act="appt" data-id="${esc(a.id)}"><span class="d">${esc(fmtDate(a.at, { year: '2-digit' }))}</span><span>${esc(a.title)}${a.provider ? ` · ${esc(a.provider)}` : ''}</span>${icon('chev', 'sm')}</button>`).join('')}</div>`;
 }
 
-function entryRow(e, es, j) {
+function dayGroups(list, es, tl, { asc = false, startDate = null, showIncident = false } = {}) {
+  const groups = [];
+  for (const e of list) {
+    const k = dayKey(e.at);
+    if (!groups.length || groups[groups.length - 1].k !== k) {
+      const label = startDate ? `Day ${daysBetween(startDate, e.at) + 1} · ${fmtDateLong(e.at)}` : fmtDay(e.at);
+      groups.push({ k, label, items: [] });
+    }
+    groups[groups.length - 1].items.push(e);
+  }
+  if (asc) groups.forEach((g) => g.items.sort((a, b) => (a.at < b.at ? -1 : 1)));
+  return groups.map((g) => `<section class="day"><h3>${esc(g.label)}</h3>${g.items.map((e) => entryRow(e, es, tl.j++, showIncident)).join('')}</section>`).join('');
+}
+
+// Incidents as expandable cards, with entries outside any incident in between (newest first).
+function groupedTimeline(inj, es, tl) {
+  const incs = S.incidents(inj.id);
+  const ids = new Set(incs.map((x) => x.id));
+  const blocks = incs.map((inc) => ({ t: S.incidentSpan(inc).last, inc }));
+  for (const e of es) if (!ids.has(e.incidentId)) blocks.push({ t: e.at, e });
+  blocks.sort((a, b) => (a.t < b.t ? 1 : -1));
+  let html = '', loose = [];
+  const flush = () => { if (loose.length) html += dayGroups(loose, es, tl); loose = []; };
+  for (const b of blocks) { if (b.e) loose.push(b.e); else { flush(); html += incidentCard(inj, b.inc, es, tl); } }
+  flush();
+  return html;
+}
+
+function incidentDates(inc) {
+  const sp = S.incidentSpan(inc);
+  const end = sp.end ? new Date(sp.end) : new Date();
+  const days = daysBetween(sp.first, end) + 1;
+  const range = `${fmtDate(sp.first, { year: new Date(sp.first).getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined })} – ${sp.end ? fmtDate(sp.end, { year: new Date(sp.end).getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined }) : 'now'}`;
+  return { sp, from: startOfDay(sp.first), to: end, days, range };
+}
+
+function incidentCard(inj, inc, es, tl) {
+  const ies = es.filter((e) => e.incidentId === inc.id);
+  const d = incidentDates(inc);
+  const r = St.rated(ies);
+  const worst = r.length ? Math.max(...r.map((e) => e.pain)) : null;
+  const open = view.expanded.has(inc.id);
+  const resolved = inc.status === 'resolved';
+  return `<section class="card incident ${resolved ? 'resolved' : 'ongoing'} ${open ? 'open' : ''}" data-inc="${esc(inc.id)}">
+    <button type="button" class="inc-head" data-act="toggle-inc" data-id="${esc(inc.id)}" aria-expanded="${open}">
+      <span class="inc-top"><span class="inc-status">${resolved ? `${icon('check', 'xs')}Resolved` : 'Ongoing'}</span><span class="inc-dates">${esc(d.range)} · ${d.days} day${d.days === 1 ? '' : 's'}</span></span>
+      <span class="inc-row"><span class="inc-title">${esc(inc.title)}</span>${worst != null ? `<span class="inc-worst">worst ${sevBadge(worst)}</span>` : ''}</span>
+      ${new Set(r.map((e) => dayKey(e.at))).size >= 3 ? spark(St.daily(ies, d.from, d.to)) : ''}
+      <span class="inc-meta"><span>${ies.length} entr${ies.length === 1 ? 'y' : 'ies'}${ies[0] ? ` · last ${esc(ago(ies[0].at))}` : ''}</span><span class="inc-chev">${icon('down', 'sm')}</span></span>
+    </button>
+    <div class="collapse ${open ? '' : 'closed'}" ${open ? '' : 'inert'}><div><div class="inc-body">
+      ${inc.summary ? `<p class="inc-sum">${esc(inc.summary)}</p>` : ''}
+      ${dayGroups(ies, es, tl)}
+      <a class="inc-open" href="#/injury/${esc(inj.id)}/incident/${esc(inc.id)}">${icon('clip', 'sm')}Open this incident on its own${icon('chev', 'sm')}</a>
+    </div></div></div>
+  </section>`;
+}
+
+function incidentView(inj, inc) {
+  const all = S.entries(inj.id);
+  const ies = S.incidentEntries(inc.id);
+  const d = incidentDates(inc);
+  const r = St.rated(ies);
+  const worst = r.length ? Math.max(...r.map((e) => e.pain)) : null;
+  const avg = r.length ? r.reduce((a, e) => a + e.pain, 0) / r.length : null;
+  const appts = S.appointments(inj.id).filter((a) => new Date(a.at) >= d.from && (inc.status !== 'resolved' || new Date(a.at) <= addDays(d.to, 1)));
+  const resolved = inc.status === 'resolved';
+  const tl = { j: 0 };
+  let i = 0;
+  return `
+    <div class="topbar" ${st(i++)}><a class="back" href="#/injury/${esc(inj.id)}">${icon('left')}${esc(inj.name)}</a>
+      <div class="tb-r"><button type="button" class="icon-btn" data-act="edit-incident" aria-label="Edit incident">${icon('more')}</button></div></div>
+    <div class="hero" ${st(i++)}><span class="eyebrow">${resolved ? 'Resolved incident' : 'Ongoing incident'} · ${esc(d.range)}</span><h1>${esc(inc.title)}</h1>
+      ${inc.summary ? `<p class="inc-lead">${esc(inc.summary)}</p>` : ''}</div>
+    <div class="tiles four" ${st(i++)}>
+      <div class="card tile"><span class="k">Days</span><span class="big">${d.days}</span></div>
+      <div class="card tile"><span class="k">Entries</span><span class="big">${ies.length}</span></div>
+      <div class="card tile"><span class="k">Worst</span><span class="big" ${worst != null ? `style="color:${sevColor(worst)}"` : ''}>${worst ?? '–'}</span></div>
+      <div class="card tile"><span class="k">Average</span><span class="big">${avg == null ? '–' : avg.toFixed(1)}</span></div>
+    </div>
+    <div class="card chart-card" ${st(i++)}><div class="chart-top"><span class="big">Daily worst pain</span></div>${trend(St.daily(ies, d.from, d.to))}</div>
+    ${appts.length ? `<div class="section-h" ${st(i++)}><h2>Appointments</h2><span>during this incident</span></div>
+      <div class="card list" ${st(i++)}>${appts.map((a) => `<button type="button" class="crow btn-row" data-act="appt" data-id="${esc(a.id)}"><span class="d">${esc(fmtDate(a.at))}</span><span>${esc(a.title)}${a.provider ? ` · ${esc(a.provider)}` : ''}</span>${icon('chev', 'sm')}</button>`).join('')}</div>` : ''}
+    <div class="section-h" ${st(i++)}><h2>How it unfolded</h2><span>oldest first</span></div>
+    <div class="timeline" ${st(i++)}>${ies.length ? dayGroups([...ies].reverse(), all, tl, { asc: true, startDate: d.from }) : '<p class="muted-p">No entries yet. Log one and pick this incident under "Part of".</p>'}</div>
+    <div class="btns" ${st(i++)}>
+      <button type="button" class="btn" data-act="resolve-incident">${icon(resolved ? 'refresh' : 'check', 'sm')}${resolved ? 'Reopen' : 'Mark resolved'}</button>
+      <button type="button" class="btn" data-act="edit-incident">${icon('pen', 'sm')}Edit</button>
+    </div>
+    <div class="fade-bottom"></div>
+    ${inj.status !== 'resolved' ? `<button type="button" class="fab" data-act="log" data-inj="${esc(inj.id)}" data-inc="${esc(inc.id)}">${icon('plus')}Log now</button>` : ''}`;
+}
+
+function entryRow(e, es, j, showIncident = false) {
   const rx = e.type === 'treatment' ? St.effectFor(es, e) : null;
   const tags = [
     ...(e.ask ? [`<span class="tag flag">${e.askDone ? `${icon('check', 'xs')}Asked` : 'Ask doctor'}</span>`] : []),
     ...(e.feels || []).map((t) => `<span class="tag">${esc(t)}</span>`),
     ...(e.doing || []).map((t) => `<span class="tag ${e.type === 'treatment' ? 'rx' : 'doing'}">${esc(t)}</span>`),
     ...(rx ? [`<span class="tag rx">Pain ${rx[0]} → ${rx[1]}</span>`] : []),
+    ...(showIncident && S.incident(e.incidentId) ? [`<span class="tag inc">${esc(S.incident(e.incidentId).title)}</span>`] : []),
   ];
   const node = e.pain != null ? `<span class="node" style="--sev:${sevColor(e.pain)}"></span>` : `<span class="node sq ${e.type}"></span>`;
   return `<button type="button" class="entry" data-act="entry" data-id="${esc(e.id)}" style="--j:${Math.min(j, 12)}">
-    <span class="time">${esc(fmtTime(e.at))}</span>
+    <span class="time">${e.noTime ? '' : esc(fmtTime(e.at))}</span>
     <span class="railc">${node}</span>
     <span class="card body">
       <span class="row"><span class="ttl">${icon(S.TYPE[e.type]?.icon || 'pen', 'xs')}${esc(typeLabel(e))}${e.source === 'assistant' ? `<span class="by-ai" title="Added by your assistant">${icon('spark', 'xs')}</span>` : ''}</span>${sevBadge(e.pain)}</span>
@@ -256,6 +351,7 @@ function visitView(inj) {
       <div class="card tile"><span class="k">Night pain</span><span class="big">${s.nights}<small> night${s.nights === 1 ? '' : 's'}</small></span><span class="s">Logged 10 PM – 6 AM</span></div>
     </div>
     <div class="card chart-card print-keep" ${st(i++)}>${trendFor(all, cur)}</div>
+    ${visitIncidents(inj, cur, i++)}
 
     <div class="section-h" ${st(i++)}><h2>Questions to ask</h2><span>${open ? `${open} open` : questions.length ? 'All asked' : ''}</span></div>
     ${questions.length ? `<div class="card qs" ${st(i++)}>${questions.map((q) => `<label class="q"><input type="checkbox" data-ask="${esc(q.id)}" ${q.askDone ? 'checked' : ''}><span>${esc(q.note || `${typeLabel(q)}${q.pain != null ? ` (pain ${q.pain})` : ''}`)}<small>Logged ${esc(fmtDate(q.at))}</small></span></label>`).join('')}</div>`
@@ -273,10 +369,22 @@ function visitView(inj) {
 
     <div class="section-h" ${st(i++)}><h2>All entries</h2><span>oldest first · ${asc.length}</span></div>
     ${asc.length ? `<div class="card list entries-list" ${st(i++)}>${asc.map((e) => `<div class="crow">
-      <span class="d">${esc(fmtDate(e.at))}<br>${esc(fmtTime(e.at))}</span>
+      <span class="d">${esc(fmtDate(e.at))}${e.noTime ? '' : `<br>${esc(fmtTime(e.at))}`}</span>
       <span class="ct"><b>${esc(typeLabel(e))}</b>${[...(e.feels || []), ...(e.doing || [])].length ? ` · ${esc([...(e.feels || []), ...(e.doing || [])].join(', '))}` : ''}${e.note ? `<span class="nt">${esc(e.note)}</span>` : ''}</span>
       ${e.pain != null ? sevBadge(e.pain) : e.ask ? '<span class="tag flag">Ask</span>' : '<span></span>'}</div>`).join('')}</div>` : '<p class="muted-p">No entries in this range.</p>'}
     <div class="btns no-print" ${st(i++)}><button type="button" class="btn primary" data-act="print">${icon('print', 'sm')}Print / PDF</button><button type="button" class="btn" data-act="share">${icon('share', 'sm')}Share text</button></div>`;
+}
+
+function visitIncidents(inj, cur, i) {
+  const list = S.incidents(inj.id).filter((inc) => { const sp = S.incidentSpan(inc); return new Date(sp.first) <= cur.to && (!sp.end || new Date(sp.end) >= cur.from); });
+  if (!list.length) return '';
+  return `<div class="section-h" ${st(i)}><h2>Incidents</h2><span>in this period</span></div>
+    <div class="card list" ${st(i)}>${list.map((inc) => {
+      const d = incidentDates(inc);
+      const r = St.rated(S.incidentEntries(inc.id));
+      const worst = r.length ? Math.max(...r.map((e) => e.pain)) : null;
+      return `<a class="crow btn-row inc-row-link" href="#/injury/${esc(inj.id)}/incident/${esc(inc.id)}"><span class="d">${esc(inc.status === 'resolved' ? 'Resolved' : 'Ongoing')}</span><span class="ct"><b>${esc(inc.title)}</b><span class="nt">${esc(d.range)} · ${d.sp.count} entries</span></span>${worst != null ? sevBadge(worst) : icon('chev', 'sm')}</a>`;
+    }).join('')}</div>`;
 }
 
 function trendFor(all, cur) {
@@ -297,7 +405,7 @@ function shareText(inj) {
   if (s.triggers.length) { lines.push('', `Triggers: ${s.triggers.map(([t, n]) => `${t} (${n})`).join(', ')}`); }
   if (s.treatments.length) lines.push(`Treatments: ${s.treatments.map((t) => `${t.name} ${t.count}×${t.avg != null ? ` (${t.avg > 0 ? '+' : ''}${t.avg.toFixed(1)})` : ''}`).join(', ')}`);
   lines.push('', 'Entries:');
-  [...s.entries].reverse().forEach((e) => lines.push(`${fmtDate(e.at)} ${fmtTime(e.at)} · ${typeLabel(e)}${e.pain != null ? ` ${e.pain}/10` : ''}${[...(e.feels || []), ...(e.doing || [])].length ? ` · ${[...(e.feels || []), ...(e.doing || [])].join(', ')}` : ''}${e.note ? ` · ${e.note}` : ''}`));
+  [...s.entries].reverse().forEach((e) => lines.push(`${fmtDate(e.at)}${e.noTime ? "" : ` ${fmtTime(e.at)}`} · ${typeLabel(e)}${e.pain != null ? ` ${e.pain}/10` : ''}${[...(e.feels || []), ...(e.doing || [])].length ? ` · ${[...(e.feels || []), ...(e.doing || [])].join(', ')}` : ''}${e.note ? ` · ${e.note}` : ''}`));
   return lines.join('\n');
 }
 
@@ -348,7 +456,7 @@ function settingsView() {
         <p class="hint">Erasing doesn't touch your synced copy or backup files.</p>
       </div>
     </details>
-    <p class="foot-note" ${st(i++)}>Symptom Tracker keeps your health notes private: no accounts, no tracking, no ads.</p>`;
+    <p class="foot-note" ${st(i++)}>Symptom Tracker keeps your health notes private: no accounts, no tracking, no ads.<br>Version ${APP_VERSION}</p>`;
 }
 
 // ---------------------------------------------------------------- events
@@ -378,7 +486,28 @@ app.addEventListener('click', async (e) => {
   const act = a.dataset.act;
   const inj = route?.id ? S.injury(route.id) : null;
   switch (act) {
-    case 'log': logSheet({ injuryId: a.dataset.inj || inj?.id }); break;
+    case 'log': logSheet({ injuryId: a.dataset.inj || inj?.id, ...(a.dataset.inc ? { incidentId: a.dataset.inc } : {}) }); break;
+    case 'toggle-inc': {
+      const card = a.closest('.incident');
+      const id = a.dataset.id;
+      const open = !view.expanded.has(id);
+      if (open) view.expanded.add(id); else view.expanded.delete(id);
+      card.classList.toggle('open', open);
+      a.setAttribute('aria-expanded', String(open));
+      const c = card.querySelector('.collapse');
+      c.classList.toggle('closed', !open); c.inert = !open;
+      if (open) setTimeout(() => { const r = card.getBoundingClientRect(); if (r.bottom > innerHeight - 90) window.scrollBy({ top: Math.min(r.top - 70, r.bottom - innerHeight + 110), behavior: 'smooth' }); }, 380);
+      break;
+    }
+    case 'new-incident': incidentSheet({ injuryId: inj?.id }); break;
+    case 'edit-incident': incidentSheet({ incident: S.incident(route.inc) }); break;
+    case 'resolve-incident': {
+      const inc = S.incident(route.inc);
+      const resolving = inc.status !== 'resolved';
+      S.save('incidents', { ...inc, status: resolving ? 'resolved' : 'ongoing', resolvedOn: resolving ? dayKey(new Date()) : '' });
+      toast(resolving ? 'Marked resolved' : 'Reopened');
+      break;
+    }
     case 'log-q': logSheet({ injuryId: inj?.id, type: 'concern' }); break;
     case 'entry': logSheet({ entry: S.entry(a.dataset.id) }); break;
     case 'new-injury': injurySheet(); break;

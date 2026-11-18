@@ -11,6 +11,10 @@
 //        --doing "Reaching overhead" --at 2026-11-18T09:12 --note "Grabbing a mug"
 //   node tools/st.mjs question --injury "Left shoulder" --note "Should I get an MRI?"
 //   node tools/st.mjs injury --name "Right wrist" --detail "Sprain from a fall" --started 2026-11-01
+//   node tools/st.mjs incident --injury "Left shoulder" --title "Flare after hike" --summary "…" [--resolved 2026-12-01]
+//        (then add --incident <incident id> to entry/question commands to file them under it)
+//   node tools/st.mjs patch --target entry --id <id> --set '{"incident":"<incident id>","ask":false}'
+//        (changes only those fields, keeping anything the user edited in the app)
 //   node tools/st.mjs delete --target appointment --id <id printed when it was added>
 //   node tools/st.mjs json '{"kind":"appointment","at":"2026-11-20T10:30","title":"Physio"}'
 //
@@ -100,14 +104,21 @@ function build(cmd, o) {
       const type = o.type || 'note';
       if (!['pain', 'symptom', 'trigger', 'concern', 'treatment', 'note'].includes(type)) die('--type must be pain, symptom, trigger, concern, treatment or note');
       if (o.pain !== undefined && !(Number(o.pain) >= 0 && Number(o.pain) <= 10)) die('--pain must be 0 to 10');
-      return { kind: 'entry', id, injury: need(o, 'injury'), type, at: dateLike(o.at, 'at') || new Date().toISOString(), pain: o.pain !== undefined ? Number(o.pain) : null, feels: list(o.feels), doing: list(o.doing), note: o.note || '', ...(o.ask !== undefined ? { ask: !!o.ask } : {}), ...(o.answered ? { askDone: true } : {}) };
+      return { kind: 'entry', id, injury: need(o, 'injury'), type, at: dateLike(o.at, 'at') || new Date().toISOString(), pain: o.pain !== undefined ? Number(o.pain) : null, feels: list(o.feels), doing: list(o.doing), note: o.note || '', ...(o.ask !== undefined ? { ask: !!o.ask } : {}), ...(o.answered ? { askDone: true } : {}), incident: typeof o.incident === 'string' ? o.incident : '' };
     }
     case 'question': case 'concern':
-      return { kind: 'entry', id, injury: need(o, 'injury'), type: 'concern', at: dateLike(o.at, 'at') || new Date().toISOString(), note: need(o, 'note', 'the question'), ask: true };
+      return { kind: 'entry', id, injury: need(o, 'injury'), type: 'concern', at: dateLike(o.at, 'at') || new Date().toISOString(), note: need(o, 'note', 'the question'), ask: true, incident: typeof o.incident === 'string' ? o.incident : '' };
+    case 'incident':
+      return { kind: 'incident', id, injury: need(o, 'injury'), title: need(o, 'title'), summary: o.summary || '', status: o.resolved ? 'resolved' : 'ongoing', resolvedOn: typeof o.resolved === 'string' ? dateLike(o.resolved, 'resolved') : '' };
+    case 'patch': {
+      if (!['appointment', 'entry', 'incident'].includes(o.target)) die('--target must be appointment, entry or incident');
+      let set; try { set = JSON.parse(need(o, 'set', 'a JSON object of fields')); } catch { die('--set must be JSON'); }
+      return { kind: 'patch', target: o.target, id: need(o, 'id'), set };
+    }
     case 'injury':
       return { kind: 'injury', id, name: need(o, 'name'), detail: o.detail || '', startedOn: dateLike(o.started, 'started') || '', status: o.resolved ? 'resolved' : 'active' };
     case 'delete':
-      if (!['appointment', 'entry', 'injury'].includes(o.target)) die('--target must be appointment, entry or injury');
+      if (!['appointment', 'entry', 'injury', 'incident'].includes(o.target)) die('--target must be appointment, entry, injury or incident');
       return { kind: 'delete', target: o.target, id: need(o, 'id') };
     case 'json': {
       try { const v = JSON.parse(o._[1] || ''); return Array.isArray(v) ? v.map((x) => ({ id: crypto.randomUUID(), ...x })) : { id, ...v }; }

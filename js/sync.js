@@ -155,7 +155,11 @@ async function pullInbox() {
       const item = await C.openInbox(priv, it.data);
       const list = Array.isArray(item) ? item : [item];
       for (const one of list) added.push(S.applyInbox(one, it.createdAt));
-    } catch (e) { failed.push(e.message); }
+    } catch (e) {
+      // made by a newer version of the app: leave it in the inbox until this copy updates
+      if (/^Unknown kind/.test(e.message)) continue;
+      failed.push(e.message);
+    }
     done.push(it.id);
   }
   if (added.length || failed.length) inboxListeners.forEach((fn) => fn({ added, failed }));

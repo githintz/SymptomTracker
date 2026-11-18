@@ -17,6 +17,9 @@ node tools/st.mjs entry --injury "Left shoulder" --type pain --pain 6 --feels Sh
   --doing "Reaching overhead" --at 2026-11-18T09:12 --note "Grabbing a mug"
 node tools/st.mjs question --injury "Left shoulder" --note "Should I get an MRI?"
 node tools/st.mjs injury --name "Right wrist" --detail "Sprain from a fall" --started 2026-11-01
+node tools/st.mjs incident --injury "Left shoulder" --title "Flare after hike" --summary "…"   # groups entries
+node tools/st.mjs entry … --incident <incident id>        # file an entry under an incident
+node tools/st.mjs patch --target entry --id <id> --set '{"incident":"<incident id>"}'   # change only some fields
 node tools/st.mjs delete --target appointment --id <id from when it was added>
 node tools/st.mjs json '[{"kind":"appointment","at":"2026-12-02","title":"MRI"}]'   # batch / anything else
 node tools/st.mjs help
@@ -33,6 +36,11 @@ node tools/st.mjs help
   ("Thursday") against today's date and confirm them with the user if they're ambiguous.
 - Concerns are "ask my doctor" questions by default. Add `--answered` (or `"askDone": true` in json)
   to file one that's already been answered, or use json `"ask": false` to file it as a plain concern.
+- Incidents group related entries from trigger to recovery (one flare-up = one incident); the
+  timeline shows each as an expandable card. Use `patch` (not a full re-send) to change existing
+  records, so pain numbers or notes the user edited in the app aren't overwritten.
+- Only file real events (pain, symptoms, triggers, treatments, appointments, findings). Don't file
+  questions the user asked an AI as "ask my doctor" questions unless they ask for that.
 - Each command prints an id. Re-send with `--id <id>` to update that item (e.g. a rescheduled
   appointment). Keep the id in your reply so the user can ask for changes later.
 - Access is write-only: you can't read the user's entries or check what's already there. If they

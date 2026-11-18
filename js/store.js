@@ -26,8 +26,8 @@ export const PAIN_WORDS = [
   ['Very intense', 'Can barely move it'], ['Worst possible', 'Unbearable'],
 ];
 
-const KINDS = ['injuries', 'entries', 'appointments', 'devices'];
-const emptyDoc = () => ({ schema: 1, injuries: {}, entries: {}, appointments: {}, devices: {}, meta: {} });
+const KINDS = ['injuries', 'entries', 'appointments', 'devices', 'incidents'];
+const emptyDoc = () => ({ schema: 1, injuries: {}, entries: {}, appointments: {}, devices: {}, incidents: {}, meta: {} });
 
 // ---------------------------------------------------------------- key-value storage (IndexedDB, localStorage fallback)
 let dbp = null;
@@ -116,6 +116,19 @@ export const entries = (injuryId) => live(doc.entries).filter((e) => !injuryId |
 export const appointments = (injuryId) => live(doc.appointments).filter((a) => !injuryId || a.injuryId === injuryId).sort((a, b) => (a.at < b.at ? -1 : 1));
 export const upcoming = (injuryId) => appointments(injuryId).filter((a) => new Date(a.at) > Date.now() - 2 * 3600e3);
 export const devices = () => live(doc.devices).sort((a, b) => (a.lastSeen < b.lastSeen ? 1 : -1));
+// Incidents group related entries (e.g. one flare-up from trigger to recovery).
+export const incident = (id) => { const r = doc.incidents[id]; return r && !r.deleted ? r : null; };
+export const incidentEntries = (iid) => live(doc.entries).filter((e) => e.incidentId === iid).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+export function incidentSpan(inc) {
+  const es = incidentEntries(inc.id);
+  const first = es[es.length - 1]?.at || inc.createdAt;
+  const last = es[0]?.at || inc.createdAt;
+  const end = inc.status === 'resolved' ? (inc.resolvedOn ? new Date(`${inc.resolvedOn}T23:59`).toISOString() : last) : null;
+  return { first, last, end, count: es.length };
+}
+export const incidents = (injuryId) => live(doc.incidents).filter((i) => !injuryId || i.injuryId === injuryId)
+  .sort((a, b) => (incidentSpan(a).last < incidentSpan(b).last ? 1 : -1));
+export const openIncidents = (injuryId) => incidents(injuryId).filter((i) => i.status !== 'resolved');
 export const lastActivity = (injuryId) => entries(injuryId)[0]?.at || injury(injuryId)?.createdAt || '';
 
 // tags used before for an injury (most used first), followed by the defaults
@@ -154,6 +167,7 @@ export function remove(kind, id) {
   if (kind === 'injuries') {
     for (const e of live(doc.entries)) if (e.injuryId === id) tomb('entries', e.id);
     for (const a of live(doc.appointments)) if (a.injuryId === id) tomb('appointments', a.id);
+    for (const i of live(doc.incidents)) if (i.injuryId === id) tomb('incidents', i.id);
   }
   changed();
   return removed;
@@ -231,10 +245,45 @@ export function applyInbox(item, receivedAt) {
   const id = str(item.id, 80) || uid();
   const base = { id, source: 'assistant', addedAt: receivedAt || new Date().toISOString() };
   if (item.kind === 'delete') {
-    const kind = { appointment: 'appointments', entry: 'entries', injury: 'injuries' }[item.target];
+    const kind = { appointment: 'appointments', entry: 'entries', injury: 'injuries', incident: 'incidents' }[item.target];
     if (!kind || !doc[kind][item.id]) throw new Error('Nothing to delete');
     remove(kind, item.id);
     return 'Removed an item';
+  }
+  if (item.kind === 'patch') {
+    // change only the given fields of an existing record (keeps the user's own edits)
+    const kind = { appointment: 'appointments', entry: 'entries', incident: 'incidents' }[item.target];
+    const prev = kind && doc[kind][item.id];
+    if (!prev || prev.deleted) throw new Error('Nothing to update');
+    const set = item.set && typeof item.set === 'object' ? item.set : {};
+    const allowed = {
+      entries: ['type', 'note', 'pain', 'feels', 'doing', 'ask', 'askDone', 'at', 'incident', 'noTime'],
+      appointments: ['title', 'at', 'provider', 'location', 'notes'],
+      incidents: ['title', 'summary', 'status', 'resolvedOn'],
+    }[kind];
+    const next = { ...prev };
+    for (const [k, v] of Object.entries(set)) {
+      if (!allowed.includes(k)) continue;
+      if (k === 'incident') next.incidentId = str(v, 80);
+      else if (k === 'feels' || k === 'doing') next[k] = strList(v);
+      else if (k === 'ask' || k === 'askDone' || k === 'noTime') next[k] = !!v;
+      else if (k === 'pain') next.pain = v == null || v === '' ? null : Math.max(0, Math.min(10, Math.round(Number(v))));
+      else if (k === 'type') { if (TYPE[v]) next.type = v; }
+      else if (k === 'at' && kind === 'entries') { const d = parseWhen(v); if (d) next.at = d.toISOString(); }
+      else if (k === 'status') next.status = v === 'resolved' ? 'resolved' : 'ongoing';
+      else next[k] = str(v, k === 'note' || k === 'notes' || k === 'summary' ? 4000 : 140);
+    }
+    save(kind, next);
+    return 'Updated an item';
+  }
+  if (item.kind === 'incident') {
+    const inj = findInjury(item.injury) || (doc.incidents[id] && injury(doc.incidents[id].injuryId));
+    if (!inj) throw new Error('Incident needs a known injury');
+    const title = str(item.title, 80);
+    if (!title) throw new Error('Incident needs a title');
+    const prev = doc.incidents[id] && !doc.incidents[id].deleted ? doc.incidents[id] : null;
+    save('incidents', { ...(prev || base), injuryId: inj.id, title, summary: str(item.summary, 2000), status: item.status === 'resolved' ? 'resolved' : 'ongoing', resolvedOn: str(item.resolvedOn, 10) });
+    return `Incident: ${title}`;
   }
   if (item.kind === 'injury') {
     const name = str(item.name, 80);
@@ -270,6 +319,7 @@ export function applyInbox(item, receivedAt) {
       ...base, injuryId: inj.id, type, at: when.toISOString(), pain: Number.isFinite(pain) ? pain : null,
       feels: strList(item.feels), doing: strList(item.doing), note: str(item.note, 4000),
       ask: item.ask === undefined ? type === 'concern' : !!item.ask, askDone: !!item.askDone,
+      incidentId: str(item.incident, 80), noTime: !!item.noTime,
     });
     return `${TYPE[type].label} for ${inj.name}`;
   }
@@ -289,10 +339,10 @@ export function restoreJSON(text) {
 }
 export function csv() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const rows = [['Injury', 'Date', 'Time', 'Type', 'Pain (0-10)', 'Feels like', 'Activity / trigger', 'Details', 'Ask doctor']];
+  const rows = [['Injury', 'Date', 'Time', 'Type', 'Pain (0-10)', 'Feels like', 'Activity / trigger', 'Details', 'Ask doctor', 'Incident']];
   for (const e of entries().reverse()) {
     const d = new Date(e.at);
-    rows.push([injury(e.injuryId)?.name || '', d.toLocaleDateString(), d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), TYPE[e.type]?.label || e.type, e.pain ?? '', (e.feels || []).join('; '), (e.doing || []).join('; '), e.note || '', e.ask ? (e.askDone ? 'Asked' : 'Yes') : '']);
+    rows.push([injury(e.injuryId)?.name || '', d.toLocaleDateString(), d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), TYPE[e.type]?.label || e.type, e.pain ?? '', (e.feels || []).join('; '), (e.doing || []).join('; '), e.note || '', e.ask ? (e.askDone ? 'Asked' : 'Yes') : '', incident(e.incidentId)?.title || '']);
   }
   return rows.map((r) => r.map(q).join(',')).join('\r\n');
 }

@@ -1,6 +1,6 @@
 // Offline support: the app shell is cached so logging works with no signal.
 // Bump VERSION whenever any file below changes so phones pick up the update.
-const VERSION = 'st-v2';
+const VERSION = 'st-v3';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/styles.css',
   'js/app.js', 'js/store.js', 'js/sync.js', 'js/crypto.js', 'js/ui.js', 'js/sheets.js', 'js/charts.js', 'js/stats.js',

@@ -49,7 +49,7 @@ const injuryOptions = (selectedId, { allowNone = false, includeResolved = false 
 function collapse(el, open) { el.classList.toggle('closed', !open); el.inert = !open; }
 
 // ---------------------------------------------------------------- log an entry
-export function logSheet({ injuryId, entry: existing, type } = {}) {
+export function logSheet({ injuryId, entry: existing, type, incidentId } = {}) {
   if (!S.injuries().length) { injurySheet({ thenLog: true }); return; }
   const local = S.getLocal();
   const injId = existing?.injuryId || injuryId || (S.injury(local.lastInjury)?.status !== 'resolved' && S.injury(local.lastInjury) ? local.lastInjury : null)
@@ -59,6 +59,9 @@ export function logSheet({ injuryId, entry: existing, type } = {}) {
     ? { ...existing, feels: [...(existing.feels || [])], doing: [...(existing.doing || [])] }
     : { injuryId: injId, type: type || 'pain', pain: lastPain ?? 5, feels: [], doing: [], note: '', ask: type === 'concern', at: null };
   if (st.pain == null) st.pain = lastPain ?? 5;
+  const defaultIncident = (inj) => (S.openIncidents(inj)[0]?.id || '');
+  st.incidentId = existing ? (S.incident(existing.incidentId) ? existing.incidentId : '') : incidentId ?? defaultIncident(st.injuryId);
+  let newIncident = '';
 
   const sh = openSheet({
     title: existing ? 'Edit entry' : 'Log',
@@ -68,6 +71,7 @@ export function logSheet({ injuryId, entry: existing, type } = {}) {
       <div class="sec first"><div class="lbl">What happened?</div>
         <div class="types">${S.TYPES.map((t) => `<button type="button" class="type" data-type="${t.id}" aria-pressed="${t.id === st.type}">${icon(t.icon)}${t.label}</button>`).join('')}</div>
       </div>
+      <div class="sec"><div class="lbl"><span>Part of</span><span class="lbl-r">Groups related entries</span></div><div class="chips" id="incChips"></div></div>
       <div class="collapse" data-for="rated"><div><div class="sec">
         <div class="card pain-card">
           <div class="pain-read"><span class="pain-num" id="painNum">${st.pain}</span><span class="pain-word" id="painWord"></span></div>
@@ -86,7 +90,7 @@ export function logSheet({ injuryId, entry: existing, type } = {}) {
       </div></div>
       <div class="sec"><div class="lbl">When</div>
         <div class="when">
-          <button type="button" class="chip" id="whenNow" aria-pressed="${!st.at || !existing}">${icon('clock', 'xs')}<span id="nowLbl">${existing ? fmtTime(st.at) : `Now · ${fmtTime(new Date())}`}</span></button>
+          <button type="button" class="chip" id="whenNow" aria-pressed="${!st.at || !existing}">${icon('clock', 'xs')}<span id="nowLbl">${existing ? (existing.noTime ? 'Time unknown' : fmtTime(st.at)) : `Now · ${fmtTime(new Date())}`}</span></button>
           <input type="datetime-local" class="input when-input" id="whenInput" value="${toLocalInput(st.at || new Date())}" max="${toLocalInput(new Date(Date.now() + 864e5))}" aria-label="Date and time">
         </div>
       </div>`,
@@ -145,7 +149,32 @@ export function logSheet({ injuryId, entry: existing, type } = {}) {
   wireChips(feels); wireChips(doing);
   applyType();
 
-  sel.addEventListener('change', () => { st.injuryId = sel.value; st.feels = selectedTags(feels); st.doing = selectedTags(doing); renderTags(); });
+  const incBox = $('#incChips');
+  const renderInc = () => {
+    const list = S.incidents(st.injuryId).filter((i) => i.status !== 'resolved' || i.id === st.incidentId);
+    incBox.innerHTML = `${list.map((i) => `<button type="button" class="chip inc-chip" data-inc="${esc(i.id)}" aria-pressed="${st.incidentId === i.id}">${esc(i.title)}</button>`).join('')}
+      ${newIncident ? `<button type="button" class="chip inc-chip pop" data-inc="__new" aria-pressed="${st.incidentId === '__new'}">${icon('plus', 'xs')}${esc(newIncident)}</button>` : ''}
+      <button type="button" class="chip" data-inc="" aria-pressed="${!st.incidentId}">None</button>
+      <button type="button" class="chip add" data-newinc>${icon('plus', 'xs')}New incident</button>`;
+  };
+  renderInc();
+  incBox.addEventListener('click', (e) => {
+    const c = e.target.closest('.chip');
+    if (!c) return;
+    if (c.hasAttribute('data-newinc')) {
+      const inp = document.createElement('input');
+      inp.className = 'chip-input'; inp.maxLength = 80; inp.placeholder = 'e.g. Flare after hike';
+      c.replaceWith(inp); inp.focus();
+      const done = () => { const v = inp.value.trim(); if (v) { newIncident = v; st.incidentId = '__new'; } renderInc(); };
+      inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); } if (ev.key === 'Escape') { ev.stopPropagation(); inp.value = ''; inp.blur(); } });
+      inp.addEventListener('blur', done, { once: true });
+      return;
+    }
+    st.incidentId = c.dataset.inc;
+    renderInc();
+  });
+
+  sel.addEventListener('change', () => { st.injuryId = sel.value; st.feels = selectedTags(feels); st.doing = selectedTags(doing); renderTags(); newIncident = ''; st.incidentId = defaultIncident(st.injuryId); renderInc(); });
   $('#askSw').addEventListener('click', (e) => { const b = e.currentTarget; b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')); });
   whenNow.addEventListener('click', () => {
     const on = whenInput.classList.toggle('show');
@@ -162,8 +191,10 @@ export function logSheet({ injuryId, entry: existing, type } = {}) {
     if ((st.type === 'trigger' || st.type === 'treatment') && !st.doing.length && !st.note) { shake(doing); return; }
     const custom = whenInput.classList.contains('show') && whenInput.value;
     const at = custom ? new Date(whenInput.value) : existing ? new Date(existing.at) : new Date();
+    let incId = st.incidentId;
+    if (incId === '__new') incId = S.save('incidents', { injuryId: st.injuryId, title: newIncident, summary: '', status: 'ongoing' }).id;
     const rec = {
-      ...(existing || {}), injuryId: st.injuryId, type: st.type, at: at.toISOString(),
+      ...(existing || {}), injuryId: st.injuryId, incidentId: incId || '', noTime: custom ? false : !!existing?.noTime, type: st.type, at: at.toISOString(),
       pain: S.RATED.has(st.type) ? st.pain : null, feels: S.RATED.has(st.type) ? st.feels : [],
       doing: st.type === 'note' || st.type === 'concern' ? [] : st.doing, note: st.note, ask: st.ask, askDone: st.ask ? !!existing?.askDone : false,
     };
@@ -214,6 +245,41 @@ export function injurySheet({ injury: existing, thenLog = false } = {}) {
     await sh.close();
     go('#/');
     toast(`Deleted ${existing.name}`, { action: 'Undo', onAction: () => S.restore(removed) });
+  });
+}
+
+// ---------------------------------------------------------------- incident
+export function incidentSheet({ incident: existing, injuryId } = {}) {
+  const st = existing || { injuryId, status: 'ongoing' };
+  const n = existing ? S.incidentEntries(existing.id).length : 0;
+  const sh = openSheet({
+    title: existing ? 'Edit incident' : 'New incident',
+    body: `
+      <div class="field"><label for="icTitle">Name</label><input class="input" id="icTitle" maxlength="80" placeholder="e.g. Flare-up after Seealpsee hike" value="${esc(st.title)}"></div>
+      <div class="field"><label for="icSum">Summary <span class="opt">Optional</span></label><textarea class="input" id="icSum" rows="3" maxlength="2000" placeholder="What happened, in a sentence or two">${esc(st.summary)}</textarea></div>
+      <div class="field"><span class="label">Status</span>${seg([['ongoing', 'Ongoing'], ['resolved', 'Resolved']], st.status === 'resolved' ? 'resolved' : 'ongoing', 'lg')}</div>
+      <div class="collapse ${st.status === 'resolved' ? '' : 'closed'}" id="icResBox"><div><div class="field"><label for="icRes">Resolved on <span class="opt">Optional</span></label><input type="date" class="input" id="icRes" value="${esc(st.resolvedOn || '')}" max="${dayKey(new Date())}"></div></div></div>
+      ${existing ? `<button type="button" class="danger-btn" id="delInc">${icon('trash', 'sm')}Delete incident (keeps its ${n} entries)</button>` : ''}`,
+    foot: `<button type="button" class="save" id="saveInc">${icon('check')}${existing ? 'Save changes' : 'Add incident'}</button>`,
+  });
+  const $ = (q) => sh.el.querySelector(q);
+  let status = st.status === 'resolved' ? 'resolved' : 'ongoing';
+  initSeg(sh.el.querySelector('.seg'), (v) => { status = v; collapse($('#icResBox'), v === 'resolved'); });
+  collapse($('#icResBox'), status === 'resolved');
+  $('#saveInc').addEventListener('click', async () => {
+    const title = $('#icTitle').value.trim();
+    if (!title) { shake($('#icTitle')); $('#icTitle').focus(); return; }
+    const rec = S.save('incidents', { ...(existing || {}), injuryId: st.injuryId, title, summary: $('#icSum').value.trim(), status, resolvedOn: status === 'resolved' ? $('#icRes').value : '' });
+    await sh.close();
+    if (!existing) go(`#/injury/${rec.injuryId}/incident/${rec.id}`);
+    else toast('Saved');
+  });
+  const del = $('#delInc');
+  if (del) confirmButton(del, 'Tap again to delete the incident', async () => {
+    const removed = S.remove('incidents', existing.id);
+    await sh.close();
+    go(`#/injury/${existing.injuryId}`);
+    toast('Incident deleted. Its entries are still in the timeline.', { action: 'Undo', onAction: () => S.restore(removed) });
   });
 }
 
